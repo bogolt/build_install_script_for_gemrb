@@ -1,0 +1,562 @@
+#!/bin/sh
+
+scriptname="${0##*/}"
+scriptversion=1.31
+
+# This is the sh compatible version, but still assumes GNU tools (grep, etc)
+# only tested on Debian,Mint,and Ubuntu
+
+# You will need to sort out the game data and the configuration by referring
+# to http://www.gemrb.org/wiki/doku.php?id=installation
+
+license() {
+    
+    
+cat <<EOF
+
+$scriptname 
+
+Version 1.0 5 August 2013 (initial release) 
+Version 1.1 10 August 2013
+Version 1.2 13 August 2013
+Version 1.3 15 August 2013
+Version 1.31 20 August 2013
+
+License:
+
+    A script to install dependencies and compile, then later update gemrb
+    
+    Copyright (C) 2013 Exactus29 exactus29@gmail.com 
+    https://github.com/Exactus29
+    
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+EOF
+
+}
+
+# usage function
+
+usage () {
+
+cat <<EOF
+
+#####
+
+Usage:
+    $scriptname: [options] 
+
+    This script installs any dependencies for gemrb, which is 
+    an open source recreation of the infinity engine (see 
+    http://www.gemrb.org ), and then compiles the program when 
+    run for the first time using the -i switch. After that, gemrb 
+    can then be updated or rebuilt at any time.
+          
+    
+All options:
+
+-d          diagnostic mode, follow script execution 
+-h          show this help file
+-v          In verbose mode all stdout and stderr is printed (default: stderr only) 
+-u          update (git pull) source folder and compile again if necessary 
+-i          compile and install from scratch (dependencies are checked also)
+-p          check (and install) essential dependencies and then exit
+-q          quiet mode
+-l          show GPL license and version info
+
+
+####
+
+EOF
+
+}
+
+os_check() {
+
+
+    # check if running on Ubuntu, Mint, or Debian, in order to see if can install packages
+
+    # as it happens, with further testing, it is not so straightforward to identify which distro one is running....
+    # We will see if we can grep /etc/issue or the results of lsb_release -a to find the distro name  
+    # suppose we could check for the file /etc/debian_version which is present on Debian and its derivatives such as Ubuntu, Mint, etc  
+
+    if [ ! -f /etc/issue ] || [ ! -f /etc/lsb-release ]; then
+        printf "You will have to manually install the dependencies: see http://www.gemrb.org/wiki/doku.php?id=installation\n" >&2
+        os_type="not_debian_type"
+        # this is not to imply that only Debian based distros have these two files, but these are just the two files that we are to
+        # test and that are definitely usually present on Debian based distros
+        return 1
+    fi
+
+    if grep -Eiq "ubuntu|mint|debian" </etc/issue 2>/dev/null; then 
+        printf "Debian based system detected, we should be able to check for and install all necessary dependencies.\n"
+        os_type="debian_type"
+        return 0
+    elif grep -Eiq "ubuntu|mint|debian" </etc/lsb-release 2>/dev/null; then 
+        printf "Debian based system detected, we should be able to check for and install all necessary dependencies.\n"
+        os_type="debian_type"
+        return 0
+    else 
+        printf "You will have to manually install the dependencies: see http://www.gemrb.org/wiki/doku.php?id=installation\n" >&2
+        os_type="not_debian_type"
+        return 1
+    
+    fi
+    
+            
+}
+
+
+# still check if no args are given, so script does not execute
+
+if [ $# -eq 0 ]; then
+    printf "No argument has been given: please refer to these instructions: \n" >&2
+    usage >&2
+    exit 1
+fi
+
+# check if git is installed; this is necessary as a prerequisite, since we run a git
+# clone to install initially and a git pull to update
+
+# command -v switch is compatible with dash, it perhaps not all older versions of sh?
+if command -v git pull >/dev/null 2>&1; then 
+    printf "Git is installed, proceeding with script.....\n"
+else
+    os_check || exit 1
+    # use results of os_check function to determine next actions
+    case $os_type in
+        "debian_type") 
+                       printf "We will install git and then you should run the script again.\n"
+                       printf "If you have recently elevated your privileges with sudo, you will not see a prompt here, " 
+                       printf "before the apt-get update and installation of packages occurs.\n"
+                       sleep 2
+                       sudo -p "Please provide your password to install git: " apt-get update && sudo apt-get install git
+                       exit $?
+                    ;;
+    "not_debian_type") 
+                       printf "You will have to manually install git and then run the script again.\n" >&2
+                       exit 1
+                    ;;   
+                    *) 
+                       printf "Unknown error, exiting.\n" >&2
+                       exit 1
+                    ;;
+    esac
+        
+fi
+ 
+# Firstly, just check to see if github is online, so script can exit properly
+# if we can't connect to the site
+
+ping -c 2 www.github.com >/dev/null 2>&1 || { printf '%s\n' "github could not be found, exiting." >&2; exit 1; }
+
+# variables, to check in (and) after getopts loop
+# the script_mode one is mandatory
+
+script_mode=""
+
+# flags with default values, to query after getopts loop, to alter behaviour of script
+ 
+verbose=0 
+diagnostics=0
+quiet=0
+#logging=0
+#TODO:logging not implemented in this sh version
+
+OPTIND=1
+
+while getopts ":dviquplh" option; do
+    case $option in
+    
+    d) 
+       diagnostics=1 && set -x && printf "Diagnostic mode initiated (set -x)\n"  
+    ;;
+    v) # setting verbose also turns logging on, and logging is turned on also when install is run even if verbose is not specified 
+       verbose=1 && printf "Verbose mode initiated.\n"  
+    ;;
+    q)
+       quiet=1
+    ;;
+    i) 
+       script_mode="installer"
+       if [ ! -d $HOME/src/gemrb ] && [ ! -d $HOME/gemrb_game ]; then 
+            printf "Seems we need to build afresh, no gemrb folders\n" >&2
+       elif [ -d $HOME/src/gemrb ] && [ ! -d $HOME/gemrb_game ]; then
+            printf "Gemrb source folder exists, but gemrb_game doesn't, rebuild needed\n" >&2
+       elif [ ! -d $HOME/src/gemrb ] && [ -d $HOME/gemrb_game ]; then
+            printf "Gemrb source folder doesn't exist, but gemrb_game does. Game will be recompiled, " >&2
+            printf "and the current gemrb_game will renamed to gemrb_game.old\n" >&2
+       else
+            printf "Please use the update switch ( -u) instead, as both gemrb folders already exist.\n " >&2
+            printf "Delete either one and run this option again to force a rebuild.\n" >&2
+            usage >&2
+            exit 1          
+       fi
+    ;;
+    u) 
+       script_mode="updater" 
+       if [ -d $HOME/src/gemrb ] && [ -d $HOME/gemrb_game ]; then 
+            printf "Lets see if there are any new commits.\n"
+       elif [ -d $HOME/src/gemrb ] &&  [ ! -d $HOME/gemrb_game ]; then
+            printf "The source folder of gemrb exists, but the game folder does not, use the install switch instead\n" >&2
+            exit 1
+       else     
+            printf "Please use the install switch ( -i) instead\n" >&2
+            usage >&2
+            exit 1          
+       fi
+    ;;
+    p) 
+       script_mode="dependencies_checker"
+    ;;
+    h) 
+       printf "Usage options for $scriptname: \n" 
+       usage
+       exit $?
+    ;;
+    l) 
+       printf "License and version for $scriptname: \n"
+       license
+       exit $?
+    ;;
+    \:) 
+        printf -- "-$OPTARG must be furnished with an argument: use -h for help\n" >&2
+        usage >&2 
+        exit 1
+    ;;
+    \?) 
+        printf -- "-$OPTARG is not recognised as a valid switch for $scriptname: use -h for help\n" >&2 
+        usage >&2
+        exit 1
+    ;;
+    *) 
+        printf "Unknown error, something has gone most terribly wrong\n" >&2
+    # not really necessary...should never be called..or if it is, it will be a bug 
+        exit 1
+    ;;
+    esac
+done
+
+shift $(( OPTIND -1 )) 
+
+#### functions list
+
+##1##
+
+optional_dependencies() {
+    
+    # only called if the user has entered yes to the select question prompt after the
+    # essential dependencies function
+
+    # iconv is built into glibc on Ubuntu and Mint and presumably Debian so no need to install
+    # it separately 
+
+    # test variable from earlier, and exit function if opt deps not available
+
+    [ "$(echo "${optional_deps}" | wc -w)" -ne 2 ] && printf "optional packages do not seem to be available\n" >&2 && return 1
+
+    local optional_query="libfreetype6 libpng12-0"
+    local installed=""
+    local to_be_installed=""
+
+    # this time do not want to quote optional_query as we need it to be word split into the two packages
+    for package in ${optional_query}; do
+        if dpkg -l "$package" 2>/dev/null | grep -iq '^ii'; then
+            installed="${installed} $package"
+        else 
+            to_be_installed="${to_be_installed} $package"
+        fi
+    done
+
+    # now test to see if we need to install anything by querying number of items 
+
+    if [ -n "${to_be_installed}" ]; then
+        printf "If you have recently elevated your privileges with sudo, you will not see a prompt here, " 
+        printf "before the apt-get update and installation of packages occurs.\n"
+        sudo -p "Please type your password to install ${to_be_installed}: " apt-get update && sudo apt-get install "${to_be_installed}" 
+        return $?
+    else 
+        printf "The required dependencies (${installed}) are already installed\n"
+        return $?
+    fi 
+    
+}
+
+##2##
+
+dependencies_install() {  
+
+    # The dependencies_install function called only if running on a Debian system such as Ubuntu, Mint
+    # or Debian itself and only if the dependencies have been verified as available, but it has to be 
+    # declared here before it is called
+
+    local packages_query="libopenal1 libsdl1.2debian zlib1g python cmake make"
+    local installed=""
+    local to_be_installed=""
+
+    # don't quote packages_query as we actually want it to be wordsplit!
+    for package in ${packages_query}; do 
+        if dpkg -l "$package" 2>/dev/null | grep -iq '^ii'; then
+            installed="${installed} $package"
+        else 
+            to_be_installed="${to_be_installed} $package"
+        fi
+    done
+
+    # now test to see if we need to install anything by testing string
+
+    if [ -n "${to_be_installed}" ]; then
+        printf "If you have recently elevated your privileges with sudo, you will not see a prompt here, " 
+        printf "before the apt-get update and installation of packages occurs.\n"
+        sudo -p "Please type your password to install ${to_be_installed}: " apt-get update && sudo apt-get install "${to_be_installed}"     
+    else 
+        printf "The required dependencies (${installed}) are already installed\n"
+    fi 
+
+
+    # now test whether the user wishes the optional dependencies installed?
+
+    # -p is a valid option for read in dash, but maybe not in ancient shells?
+
+    while read -p "Do you want to install the optional dependencies (libfreetype6 and libpng12-0)? Iconv is already present in glibc on Debian based systems? (y|n). " response >&2
+    do
+        case $response in 
+            Y|y) optional_dependencies; return 0; break;; 
+            N|n) return 0; break;; 
+            *) printf "Not a valid answer, please choose again\n" >&2; continue;; 
+        esac 
+    done
+
+}
+
+##3##
+
+validate_packages() {
+
+    # validate_packages function to check packages are available
+    # only executed if we are on Ubuntu, Mint, or Debian, and only executed first time script is run
+
+    local essential_package_check="libopenal1 libsdl1.2debian zlib1g python cmake make"
+    local optional_package_check="libfreetype6 libpng12-0"
+    # iconv is built into glibc on Ubuntu, Mint and presumably Debian
+    local validated=""
+    local optional_validated=""
+    # use apt-cache to see only if such packages exist, NOT whether they are installed
+
+    # don't quote essential_package_check as we WANT it to be wordsplit!
+    for package in ${essential_package_check}; do
+        if apt-cache search "$package" | grep -iq "$package"; then 
+        validated="${validated} $package" 
+        fi
+    done
+
+    # again, don't quote optional_package_check
+    for package in ${optional_package_check}; do
+        if apt-cache search "$package" | grep -iq "$package"; then
+            optional_validated="${optional_validated} $package"
+        fi
+    done
+
+    # save optional_validated in a global variable for later function
+    optional_deps="${optional_validated}"
+
+
+    # check to see if all six essential packages are in the "validated" variable
+
+    if [ "$(echo "${essential_package_check}" | wc -w)" -eq 6  ]; then 
+        printf "All essential packages validated as available packages; proceeding to check "
+        printf "whether they are installed, and if not, install them\n"
+        # now call function
+        dependencies_install || exit 1
+    else 
+        printf "It seems that some of the names of the packages have been changed, "
+        printf "please update this script (tailor it for Mint/Debian) or install the packages manually\n" >&2
+        # return to main script
+        return 1
+    fi 
+
+}
+
+##4## 
+ 
+gembuild() { 
+    
+    # These tests are necessary as this function is called on three 
+    # different occasions, when different folders may exist or not
+
+    # if game is being rebuilt, also need to check for game folders
+
+    if [ -d $HOME/gemrb_game.old ]; then 
+        rm -rf $HOME/gemrb_game.old
+    fi
+ 
+    if [ -d $HOME/gemrb_game ]; then 
+        mv $HOME/gemrb_game $HOME/gemrb_game.old
+    fi
+    # checks for when game is rebuilt because game folder has been deleted,
+    # but $HOME/src/gemrb may still exist
+
+    if [ ! -d $HOME/src ]; then 
+        mkdir $HOME/src && cd $HOME/src && printf "$HOME/src created\n"
+    else
+        cd $HOME/src || exit 1
+    fi
+
+    if [ -d $HOME/src/gemrb ]; then 
+        cd $HOME/src/gemrb && git pull 
+    else
+        cd $HOME/src && git clone git://github.com/gemrb/gemrb.git && cd $HOME/src/gemrb && printf "git clone successful\n" 
+    fi
+
+    # build process with cmake,make,etc
+
+    # check if build folder exists
+
+    if [ -d $HOME/src/gemrb/build ]; then 
+        rm -rf $HOME/src/gemrb/build
+    fi 
+
+    mkdir $HOME/src/gemrb/build && cd $HOME/src/gemrb/build && printf "Build folder created successfully\n" 
+
+    cmake .. -DCMAKE_BUILD_TYPE=Debug -DLAYOUT=home -DPREFIX=$HOME/gemrb_game || { printf "Configuring the build with cmake has failed.\n";
+    printf "Please examine the error message and check all dependencies are installed.\n" >&2; exit 1; }
+    make || { printf "Compile has failed, please check dependencies are installed.\n" >&2; exit 1; }
+    buildcode=$?
+    # root not needed for make install this time 
+    make install || { printf '%s\n' "Install has failed, please check your permissions." >&2; exit 1; }
+    installcode=$? 
+cat <<EOF
+
+Remember to check your paths are correct in the config file, see the example files
+in $HOME/gemrb_game. Also see http://www.gemrb.org/wiki/doku.php?id=installation for more help.
+
+You will need to specify the game type, location of game data and specify the paths
+to the installed gemrb files in $HOME/gemrb_game and possibly the cache path.
+See the sample in $HOME/gemrb_game
+
+You MUST use absolute paths in the config file itself (NOT \$HOME, for example):
+In the appropriate place, after setting game type, etc, add:
+
+GemRBPath=/home/your_user/gemrb_game/
+GUIScriptsPath=/home/your_user/gemrb_game/
+PluginsPath=/home/your_user/gemrb_game/plugins/
+
+EOF
+
+    # make symlink
+    if [ -d $HOME/bin ] && [ ! -L $HOME/bin/gemrb ]; then 
+        ln -s $HOME/gemrb_game/gemrb $HOME/bin/gemrb && \
+        printf "Symlink created, you can now launch gemrb just with its own name and the "
+        printf "location of the config file, e.g. gemrb -c $HOME/.gemrb/bg2.cfg\n"
+    elif [ -d $HOME/bin ] && [ -L $HOME/bin/gemrb ] && [ -e $HOME/bin/gemrb ]; then
+        printf "Symlink already present from previous installation and still valid\n"
+    elif [ ! -d $HOME/bin ]; then 
+cat >&2 <<info 
+
+    No $HOME/bin found: you could either create the bin folder, making sure there is a suitable
+    entry in .profile or .bash_profile, referencing the addition to your path, and then logout 
+    and login and the gemrb command would be in your path. Then copy the command here to create 
+    a symlink. Or you could create a symlink in /usr/local/bin instead if you do not wish to use 
+    $HOME/bin.
+
+info
+
+    fi
+    
+
+    return $buildcode
+
+}
+
+# change behaviour of script according to flags set
+# need to check here as well, as the flags are set and the commands called in the getopts loop
+# only if those options are given on the comamnd-line
+
+# stop script executing with unknown variables, although we already check above if any arguments
+# are given, and so these tests are not really necessary
+
+[ -z "${script_mode}" ] && printf "However, you have not provided a script mode. Please study this helpfile: \n" >&2 && id 
+
+case $script_mode in
+    dependencies_checker|installer|updater) :;;
+    *) printf "Please supply a valid script mode\n" >&2; usage >&2; exit 1;;
+esac
+
+if [ "${quiet}" -eq 1 ]; then 
+    if [ "${script_mode}" = "installer" ] || [ "${script_mode}" = "dependencies_checker" ]; then
+        printf "Incompatible options; quiet mode cannot be used with this script mode. Option ignored.\n" >&2
+    else
+         exec >/dev/null 2>&1 
+    fi
+fi
+
+[ "${verbose}" -eq 0 ] && exec 1>/dev/null
+
+# test this mode before general verbosity test, so all output from dependencies_checker is not
+# blank if verbose mode is not given
+
+if [ "${script_mode}" = "dependencies_checker" ]; then 
+    os_check
+    # use results of os_check function to determine next actions
+    case $os_type in
+        "debian_type") validate_packages; exit $?;;
+        "not_debian_type") exit 1;;
+        *) printf "Unknown error, exiting" >&2; exit 1;;
+    esac 
+    
+fi
+    
+
+if [ ! -d $HOME/src ]; then 
+    mkdir $HOME/src && cd $HOME/src && printf "$HOME/src created\n"
+fi
+
+if [ "${script_mode}" = "installer" ]; then
+    os_check || exit 1
+    # use results of os_check function to determine next actions
+    case $os_type in
+        "debian_type") validate_packages;;
+        "not_debian_type") printf "You will have to manually install the dependencies: see http://www.gemrb.org/wiki/doku.php?id=installation\n" >&2;;
+        *) printf "Unknown error, exiting" >&2; exit 1;;
+    esac
+    
+    gembuild || exit 1
+    exit $?
+fi
+    
+if [ "${script_mode}" = "updater" ]; then
+    cd $HOME/src/gemrb || exit 1
+    # checked to exist above in the getopts loop
+fi
+
+# initialise string variables and do string comparison to see if
+# we need to update
+# we have checked already whether github is online
+s1="$(git pull >&1 || exit 1)"
+s2="Already up-to-date."
+
+if [ "$s1" = "$s2" ]; then 
+    printf "Warning: no need to re-compile, exiting\n" >&2
+    exit $?
+else   
+    printf "Let us build\n"
+    gembuild || exit 1
+fi
+
+exit $?
+
+
+
+
+
